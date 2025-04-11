@@ -7,6 +7,7 @@
 #include <vector>
 #include <cstdint>
 #include <stdexcept>
+#include <cstdlib>
 
 class Cache {
 public:
@@ -89,7 +90,8 @@ public:
             time += flush_penalty_;
             block = {0, false, false};  
         }
-        return time;
+
+        return time ;
     }
 
     void tick() {
@@ -103,7 +105,7 @@ public:
         if (address == 0) {
             throw std::invalid_argument("Invalid address 0");
         }
-        int time = 0;
+        int time = addNoise();
         uint64_t tag = address / block_size_;
 
         for (auto& block : blocks_) {
@@ -186,6 +188,17 @@ public:
         }
 
         return time;
+    }
+
+    void contextSwitch() {
+        for (auto& block : blocks_) {
+            block.valid = false;
+            block.dirty = false;
+        }
+    }
+
+    int addNoise() {
+        return rand() % 10;
     }
 
 private:
