@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <cstdlib>
 
+#define PROCESSOR 8
+
 class Cache {
 public:
     enum class AccessType { READ, WRITE };
@@ -42,9 +44,14 @@ public:
         if (cache_size % block_size != 0) {
             throw std::invalid_argument("Cache size must be a multiple of block size");
         }
+
         MSHR = new MSHR_entry[MSHR_size_];
         for (int i = 0; i < MSHR_size_; i++) {
             MSHR[i] = { INVALID_ADDR, 0 };
+        }
+
+        for (auto& block : blocks_) {
+            block.security_bit_table = std::vector<int>(PROCESSOR, 0);
         }
     }
 
@@ -66,9 +73,14 @@ public:
         if (cache_size % block_size != 0) {
             throw std::invalid_argument("Cache size must be a multiple of block size");
         }
+
         MSHR = new MSHR_entry[MSHR_size_];
         for (int i = 0; i < MSHR_size_; i++) {
             MSHR[i] = { INVALID_ADDR, 0 };
+        }
+
+        for (auto& block : blocks_) {
+            block.security_bit_table = std::vector<int>(PROCESSOR, 0);
         }
     }
 
@@ -76,13 +88,13 @@ public:
         delete[] MSHR;
     }
 
-    int read(uint64_t address) {
-        return process_access(address, AccessType::READ);
-    }
+    // int read(uint64_t address) {
+    //     return process_access(address, AccessType::READ);
+    // }
 
-    int write(uint64_t address) {
-        return process_access(address, AccessType::WRITE);
-    }
+    // int write(uint64_t address) {
+    //     return process_access(address, AccessType::WRITE);
+    // }
 
     int flush() {
         int time = 0;
@@ -98,49 +110,98 @@ public:
         if (next_level_) {
             next_level_->tick();
         }
-        processMSHR();
+        else
+        {
+            processMSHR();
+        }
+        // std::cout<< "processor " << processor_unit << " cycle " << cycles_ << "\n";
     }
 
-    int process_access(uint64_t address, AccessType type) {
+    int process_access(uint64_t address, AccessType type, int processor_unit) {
         if (address == 0) {
             throw std::invalid_argument("Invalid address 0");
         }
-        int time = addNoise();
+        int time = 0;
         uint64_t tag = address / block_size_;
 
+        // cache hits
         for (auto& block : blocks_) {
-            if (block.valid && block.tag == tag) {
+            if (block.valid && block.tag == tag && block.security_bit_table[processor_unit] == 1) {
                 time += hit_time_;
-                if (type == AccessType::WRITE) {
-                    block.dirty = true;
-                }
+                // if (type == AccessType::WRITE) {
+                //     block.dirty = true;
+                // }
+                block.last_access_time =cycles_;
                 return time;
             }
         }
 
-        time += miss_penalty_;
+        // Cache misses
 
-        if (next_level_) {
-            /*
-                this handles a next level cache writeback it sees how long it will take in the next level and if 
-                it is in the MSHR it merges if not it adds it to the MSHR
-            */
-            time += next_level_->process_access(address, type);
-            
-            bool MSHR_found = false;
-            for (int i = 0; i < MSHR_size_; i++) {
-                if (MSHR[i].missing_addr == address) {
-                    time = MSHR[i].finish_time - cycles_;
-                    MSHR_found = true;
+
+        // Here means LLC 
+
+        if(next_level_){
+            time += miss_penalty_;
+            bool evicted = false;
+            for (auto& block : blocks_) {
+                if (!block.valid) {
+                    block.valid = true;
+                    block.tag = tag;
+                    block.dirty = false;
+                    block.last_access_time = cycles_;
+                    evicted = true;
+
+                    //reset the table when miss
+                    for(int i = 0; i < PROCESSOR; i++){
+                        block.security_bit_table[i] = 0;
+                    }
+                    block.security_bit_table[processor_unit] = 1;
+                    break;
                 }
             }
 
-            if (!MSHR_found) {
+            if (!evicted) {
+                int lru_index = find_lru();  // Find the LRU block
+                blocks_[lru_index].tag = tag;
+                blocks_[lru_index].last_access_time = cycles_;
+                blocks_[lru_index].dirty = false;
+                
+                //reset the table when miss
+                for(int i = 0; i < PROCESSOR; i++){
+                    blocks_[lru_index].security_bit_table[i] = 0;
+                }
+                blocks_[lru_index].security_bit_table[processor_unit] = 1;
+            }
+            std::cout << "processor " << processor_unit << " L1 Cache miss: tag=" << tag << ", address=" << address 
+                          << ", time=" << time << " cycles\n";
+        }
+        else
+        {
+            if (!DRAM_) {
+                throw std::runtime_error("DRAM is not initialized!");
+            }
+
+            bool found = false;
+            for (int i = 0; i < MSHR_size_; i++) {
+                if (MSHR[i].missing_addr == address) {
+                    // if (MSHR[i].finish_time > (cycles_ + time)) {
+                    //     time = MSHR[i].finish_time - cycles_;
+                    // }
+                    found = true;
+                    time += 2;
+                    break;
+                }
+            }
+
+            if (!found) {
+                time += miss_penalty_;
                 bool inserted = false;
                 for (int i = 0; i < MSHR_size_; i++) {
                     if (MSHR[i].missing_addr == INVALID_ADDR) {
                         MSHR[i].missing_addr = address;
                         MSHR[i].finish_time = cycles_ + time;
+                        // std::cout << "mshr finish time  " << MSHR[i].finish_time << " cycle" << cycles_ << " time " << time << "\n";
                         inserted = true;
                         break;
                     }
@@ -148,53 +209,24 @@ public:
                 if (!inserted) {
                     // Optionally handle a full MSHR.
                 }
+                
             }
 
-
-
-            return time;
+            std::cout << "processor " << processor_unit << " L2 Cache miss: tag=" << tag << ", address=" << address 
+            << ", time=" << time << " cycles\n";
         }
 
-        if (!DRAM_) {
-            throw std::runtime_error("DRAM is not initialized!");
-        }
+        if (next_level_) {
+            /*
+                this handles a next level cache writeback it sees how long it will take in the next level and if 
+                it is in the MSHR it merges if not it adds it to the MSHR
+            */
+            time += next_level_->process_access(address, type, processor_unit);
 
-        bool found = false;
-        for (int i = 0; i < MSHR_size_; i++) {
-            if (MSHR[i].missing_addr == address) {
-                std::cout << "Cache miss: tag=" << tag << ", address=" << address 
-                          << ", time=" << time << " cycles\n";
-                if (MSHR[i].finish_time > (cycles_ + time)) {
-                    time = MSHR[i].finish_time - cycles_;
-                }
-                found = true;
-                break;
-            }
-        }
-
-        if (!found) {
-            bool inserted = false;
-            for (int i = 0; i < MSHR_size_; i++) {
-                if (MSHR[i].missing_addr == INVALID_ADDR) {
-                    MSHR[i].missing_addr = address;
-                    MSHR[i].finish_time = cycles_ + time;
-                    inserted = true;
-                    break;
-                }
-            }
-            if (!inserted) {
-                // Optionally handle a full MSHR.
-            }
+            // We should not worry about MSHR in L1
         }
 
         return time;
-    }
-
-    void contextSwitch() {
-        for (auto& block : blocks_) {
-            block.valid = false;
-            block.dirty = false;
-        }
     }
 
     int addNoise() {
@@ -206,17 +238,41 @@ private:
         for (int i = 0; i < MSHR_size_; i++) {
             if (MSHR[i].finish_time <= cycles_ && MSHR[i].missing_addr != INVALID_ADDR) {
                 std::cout << "FINISH TIME :: " << MSHR[i].finish_time << " HIT\n" << std::endl;
+                bool evicted = false;
                 for (auto& block : blocks_) {
                     if (!block.valid) {
                         block.valid = true;
                         block.tag = MSHR[i].missing_addr / block_size_;
                         block.dirty = false;
+                        block.last_access_time = cycles_;
+                        evicted = true;
                         break;
                     }
+                }
+
+                if (!evicted) {
+                    int lru_index = find_lru();  // Find the LRU block
+                    blocks_[lru_index].tag = MSHR[i].missing_addr / block_size_;
+                    blocks_[lru_index].last_access_time = cycles_;
+                    blocks_[lru_index].dirty = false;
                 }
                 MSHR[i] = { INVALID_ADDR, 0 };
             }
         }
+    }
+
+    int find_lru() {
+        int lru_index = 0;
+        int least_recent_access_time = INT_MAX;
+
+        for (int i = 0; i < num_blocks_; i++) {
+            if (blocks_[i].last_access_time < least_recent_access_time) {
+                least_recent_access_time = blocks_[i].last_access_time;
+                lru_index = i;
+            }
+        }
+
+        return lru_index;
     }
 
 public:
@@ -224,6 +280,8 @@ public:
         uint64_t tag = 0;
         bool valid = false;
         bool dirty = false;
+        std::vector<int> security_bit_table;
+        int last_access_time;
     };
 
     const int cache_size_;
