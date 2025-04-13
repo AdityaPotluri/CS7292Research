@@ -114,7 +114,6 @@ public:
         {
             processMSHR();
         }
-        // std::cout<< "processor " << processor_unit << " cycle " << cycles_ << "\n";
     }
 
     int process_access(uint64_t address, AccessType type, int processor_unit) {
@@ -128,19 +127,12 @@ public:
         for (auto& block : blocks_) {
             if (block.valid && block.tag == tag && block.security_bit_table[processor_unit] == 1) {
                 time += hit_time_;
-                // if (type == AccessType::WRITE) {
-                //     block.dirty = true;
-                // }
                 block.last_access_time =cycles_;
                 return time;
             }
         }
 
-        // Cache misses
-
-
-        // Here means LLC 
-
+        // Cache misses for L1 and L2
         if(next_level_){
             time += miss_penalty_;
             bool evicted = false;
@@ -162,7 +154,7 @@ public:
             }
 
             if (!evicted) {
-                int lru_index = find_lru();  // Find the LRU block
+                int lru_index = find_lru(); 
                 blocks_[lru_index].tag = tag;
                 blocks_[lru_index].last_access_time = cycles_;
                 blocks_[lru_index].dirty = false;
@@ -185,9 +177,6 @@ public:
             bool found = false;
             for (int i = 0; i < MSHR_size_; i++) {
                 if (MSHR[i].missing_addr == address) {
-                    // if (MSHR[i].finish_time > (cycles_ + time)) {
-                    //     time = MSHR[i].finish_time - cycles_;
-                    // }
                     found = true;
                     time += 2;
                     break;
@@ -201,7 +190,6 @@ public:
                     if (MSHR[i].missing_addr == INVALID_ADDR) {
                         MSHR[i].missing_addr = address;
                         MSHR[i].finish_time = cycles_ + time;
-                        // std::cout << "mshr finish time  " << MSHR[i].finish_time << " cycle" << cycles_ << " time " << time << "\n";
                         inserted = true;
                         break;
                     }
