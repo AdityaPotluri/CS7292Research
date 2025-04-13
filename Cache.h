@@ -24,6 +24,7 @@ public:
     };
 
     MSHR_entry* MSHR;
+    std::vector<std::pair<int,MSHR_entry>> MSHR_queue;
     const int MSHR_size_;
 
     // Constructor for caches with a next-level pointer.
@@ -48,6 +49,10 @@ public:
         MSHR = new MSHR_entry[MSHR_size_];
         for (int i = 0; i < MSHR_size_; i++) {
             MSHR[i] = { INVALID_ADDR, 0 };
+        }
+        for (int i = 0; i < MSHR_size_; i++) {
+            MSHR_entry entry = { INVALID_ADDR, 0 };
+            MSHR_queue.push_back(std::make_pair(0,entry));
         }
 
         for (auto& block : blocks_) {
@@ -77,6 +82,11 @@ public:
         MSHR = new MSHR_entry[MSHR_size_];
         for (int i = 0; i < MSHR_size_; i++) {
             MSHR[i] = { INVALID_ADDR, 0 };
+        }
+
+        for (int i = 0; i < MSHR_size_; i++) {
+            MSHR_entry entry = { INVALID_ADDR, 0 };
+            MSHR_queue.push_back(std::make_pair(0,entry));
         }
 
         for (auto& block : blocks_) {
@@ -116,11 +126,11 @@ public:
         }
     }
 
-    int process_access(uint64_t address, AccessType type, int processor_unit) {
+    int process_access(uint64_t address, AccessType type, int processor_unit, int time_start) {
         if (address == 0) {
             throw std::invalid_argument("Invalid address 0");
         }
-        int time = 0;
+        int time = time_start;
         uint64_t tag = address / block_size_;
 
         // cache hits
@@ -184,12 +194,17 @@ public:
             }
 
             if (!found) {
+                int mshr_start_time = time;
                 time += miss_penalty_;
                 bool inserted = false;
                 for (int i = 0; i < MSHR_size_; i++) {
-                    if (MSHR[i].missing_addr == INVALID_ADDR) {
-                        MSHR[i].missing_addr = address;
-                        MSHR[i].finish_time = cycles_ + time;
+                    if (MSHR[i].missing_addr == INVALID_ADDR) {// add a queue
+                        MSHR_entry entry;
+                        entry.missing_addr = address;
+                        entry.finish_time = cycles_ + time;
+                        std::cout << "mshr_start_time " << mshr_start_time ;
+                        MSHR_queue[i] = std::make_pair(mshr_start_time, entry);
+
                         inserted = true;
                         break;
                     }
@@ -209,7 +224,7 @@ public:
                 this handles a next level cache writeback it sees how long it will take in the next level and if 
                 it is in the MSHR it merges if not it adds it to the MSHR
             */
-            time += next_level_->process_access(address, type, processor_unit);
+            time = next_level_->process_access(address, type, processor_unit, time);
 
             // We should not worry about MSHR in L1
         }
@@ -223,6 +238,12 @@ public:
 
 private:
     void processMSHR() {
+        for (int i = 0; i < MSHR_size_; i++) {
+            if(MSHR_queue[i].first == cycles_){
+                MSHR[i] = MSHR_queue[i].second; 
+                std::cout << "MSHR START TIME :: " << cycles_ << " \n" << std::endl;
+            }
+        }
         for (int i = 0; i < MSHR_size_; i++) {
             if (MSHR[i].finish_time <= cycles_ && MSHR[i].missing_addr != INVALID_ADDR) {
                 std::cout << "FINISH TIME :: " << MSHR[i].finish_time << " HIT\n" << std::endl;
