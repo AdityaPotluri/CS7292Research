@@ -29,7 +29,7 @@ public:
 
     // Constructor for caches with a next-level pointer.
     Cache(int cache_size, int block_size, int hit_time, int miss_penalty,
-          int flush_penalty, int& cycles, int MSHR_size, Cache* next_level)
+          int flush_penalty, int& cycles, int MSHR_size, Cache* next_level, bool partitioned_mshr_enable)
         : cache_size_(cache_size),
           block_size_(block_size),
           hit_time_(hit_time),
@@ -40,7 +40,8 @@ public:
           cycles_(cycles),
           MSHR_size_(MSHR_size),
           next_level_(next_level),
-          DRAM_(nullptr)
+          DRAM_(nullptr), 
+          partitioned_mshr_enable_(partitioned_mshr_enable)
     {
         if (cache_size % block_size != 0) {
             throw std::invalid_argument("Cache size must be a multiple of block size");
@@ -58,11 +59,12 @@ public:
         for (auto& block : blocks_) {
             block.security_bit_table = std::vector<int>(PROCESSOR, 0);
         }
+        partition_pointer = 0;
     }
 
     // Constructor for the lowest-level cache (with DRAM).
     Cache(int cache_size, int block_size, int hit_time, int miss_penalty,
-          int flush_penalty, int& cycles, int MSHR_size, DRAM* dram)
+          int flush_penalty, int& cycles, int MSHR_size, DRAM* dram, bool partitioned_mshr_enable)
         : cache_size_(cache_size),
           block_size_(block_size),
           hit_time_(hit_time),
@@ -73,7 +75,8 @@ public:
           cycles_(cycles),
           MSHR_size_(MSHR_size),
           next_level_(nullptr),
-          DRAM_(dram)
+          DRAM_(dram),
+          partitioned_mshr_enable_(partitioned_mshr_enable)
     {
         if (cache_size % block_size != 0) {
             throw std::invalid_argument("Cache size must be a multiple of block size");
@@ -92,6 +95,8 @@ public:
         for (auto& block : blocks_) {
             block.security_bit_table = std::vector<int>(PROCESSOR, 0);
         }
+
+        partition_pointer = 0;
     }
 
     ~Cache() {
@@ -185,28 +190,96 @@ public:
             }
 
             bool found = false;
-            for (int i = 0; i < MSHR_size_; i++) {
-                if (MSHR[i].missing_addr == address) {
-                    found = true;
-                    time += 2;
-                    break;
+            if(partitioned_mshr_enable_){
+                if(partition_pointer == 0)
+                {
+                    for (int i = 0; i < (MSHR_size_/2); i++) {
+                        if (MSHR[i].missing_addr == address) {
+                            found = true;
+                            time += 2;
+                            partition_pointer = 1;
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    for (int i = (MSHR_size_/2); i < MSHR_size_; i++) {
+                        if (MSHR[i].missing_addr == address) {
+                            found = true;
+                            time += 2;
+                            partition_pointer = 0;
+                            break;
+                        }
+                    }
                 }
             }
+            else
+            {
+                for (int i = 0; i < MSHR_size_; i++) {
+                    if (MSHR[i].missing_addr == address) {
+                        found = true;
+                        time += 2;
+                        break;
+                    }
+                }
+            }
+            
+        
 
             if (!found) {
                 int mshr_start_time = time;
                 time += miss_penalty_;
                 bool inserted = false;
-                for (int i = 0; i < MSHR_size_; i++) {
-                    if (MSHR[i].missing_addr == INVALID_ADDR) {// add a queue
-                        MSHR_entry entry;
-                        entry.missing_addr = address;
-                        entry.finish_time = cycles_ + time;
-                        std::cout << "mshr_start_time " << mshr_start_time ;
-                        MSHR_queue[i] = std::make_pair(mshr_start_time, entry);
+                if(partitioned_mshr_enable_){
+                    if(partition_pointer == 0)
+                    {
+                        for (int i = 0; i < (MSHR_size_/2); i++) {
+                            if (MSHR[i].missing_addr == INVALID_ADDR) {// add a queue
+                                MSHR_entry entry;
+                                entry.missing_addr = address;
+                                entry.finish_time = cycles_ + time;
+                                // std::cout << "mshr_start_time " << mshr_start_time ;
+                                MSHR_queue[i] = std::make_pair(mshr_start_time, entry);
 
-                        inserted = true;
-                        break;
+                                inserted = true;
+                                partition_pointer = 1;
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        for (int i = (MSHR_size_/2); i < MSHR_size_; i++) {
+                            if (MSHR[i].missing_addr == INVALID_ADDR) {// add a queue
+                                MSHR_entry entry;
+                                entry.missing_addr = address;
+                                entry.finish_time = cycles_ + time;
+                                // std::cout << "mshr_start_time " << mshr_start_time ;
+                                MSHR_queue[i] = std::make_pair(mshr_start_time, entry);
+
+                                inserted = true;
+                                partition_pointer = 0;
+                                break;
+                            }
+                        }
+
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < MSHR_size_; i++) {
+                        if (MSHR[i].missing_addr == INVALID_ADDR) {// add a queue
+                            MSHR_entry entry;
+                            entry.missing_addr = address;
+                            entry.finish_time = cycles_ + time;
+                            // std::cout << "mshr_start_time " << mshr_start_time ;
+                            MSHR_queue[i] = std::make_pair(mshr_start_time, entry);
+
+                            inserted = true;
+                            partition_pointer = 0;
+                            break;
+                        }
                     }
                 }
                 if (!inserted) {
@@ -303,6 +376,8 @@ public:
     DRAM* DRAM_;
     std::vector<CacheBlock> blocks_;
     int& cycles_;
+    int partition_pointer;
+    bool partitioned_mshr_enable_;
 };
 
 #endif  // CACHE_H
